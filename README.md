@@ -125,6 +125,9 @@ vocolith process [OPTIONS] VIDEO
 | `--model-size TEXT` | | Whisper model: `tiny\|base\|small\|medium\|large-v2\|auto` |
 | `--language TEXT` | | Force ISO 639-1 code e.g. `en` (default: auto-detect) |
 | `--llm-model TEXT` | | Override LLM model for this run |
+| `--local` | | Use local Ollama instead of cloud LLM |
+| `--local-model TEXT` | | Ollama model name (default: from config, e.g. `mistral:7b`) |
+| `--local-url TEXT` | | Ollama base URL (default: `http://localhost:11434/v1`) |
 | `--attendees TEXT` | `-a` | Comma-separated expected attendees: `"Alice Smith, Bob Jones"` |
 | `--template TEXT` | `-t` | Add an extra template to this run |
 | `--meeting-type TEXT` | `-m` | Meeting type alias (overrides `templates.run`) |
@@ -164,7 +167,48 @@ vocolith process meeting.mp4 --dry-run
 vocolith process meeting.mp4 --language en --model-size small --output-dir ~/today/
 
 # Local LLM via Ollama
-vocolith process meeting.mp4 --llm-model mistral:7b
+vocolith process meeting.mp4 --local
+vocolith process meeting.mp4 --local --local-model llama3:8b
+```
+
+---
+
+### `vocolith notes` — generate notes from an existing transcript
+
+Re-run note generation on a transcript without re-processing the video. Skips all audio/video stages (1–8).
+
+```
+vocolith notes [OPTIONS] TRANSCRIPT
+```
+
+| Option | Short | Description |
+|---|---|---|
+| `--output-dir PATH` | `-o` | Where to write note files (default: `<transcript_stem>_notes_<ts>/`) |
+| `--config PATH` | `-c` | Path to a custom config.yaml |
+| `--llm-model TEXT` | | Override LLM model for this run |
+| `--local` | | Use local Ollama instead of cloud LLM |
+| `--local-model TEXT` | | Ollama model name (default: from config, e.g. `mistral:7b`) |
+| `--local-url TEXT` | | Ollama base URL (default: `http://localhost:11434/v1`) |
+| `--meeting-type TEXT` | `-m` | Meeting type alias (overrides `templates.run`) |
+| `--template TEXT` | `-t` | Add a single extra template |
+| `--attendees TEXT` | `-a` | Comma-separated attendee names — passed as hints in the LLM prompt |
+| `--verbose` | `-v` | Show INFO logs |
+| `--debug` | | Show DEBUG logs |
+
+**Examples:**
+
+```bash
+# Re-run with a different template
+vocolith notes standup_20260409_1430/transcript.md --template brainstorm
+
+# Re-run with local Ollama
+vocolith notes standup_20260409_1430/transcript.md --local
+
+# Two-pass workflow for low-VRAM cards:
+#   Pass 1: transcribe only (GPU used for Whisper + pyannote)
+vocolith process meeting.mp4 --dry-run
+#   Pass 2: generate notes with Ollama (GPU now free)
+vocolith notes standup_20260409_1430/transcript.md --local --local-model mistral:7b
 ```
 
 ---
@@ -537,11 +581,142 @@ Whisper model is selected automatically based on available VRAM:
 
 | VRAM | Whisper model | Compute | Batch |
 |---|---|---|---|
-| ≥3.5 GB | `large-v2` | float16 | 16 |
-| ≥2 GB | `medium` | float16 | 8 |
-| CPU only | `small` | int8 | 4 |
+| ≥5 GB | `large-v2` | `float16` | 16 |
+| ≥4 GB | `large-v2` | `int8` | 4–16 |
+| ≥2 GB | `medium` | `int8` | 4 |
+| <2 GB / CPU | `small` | `int8` | 2–4 |
 
 Override: `vocolith process meeting.mp4 --model-size small`
+
+---
+
+## Local LLM with Ollama
+
+Vocolith can generate meeting notes entirely offline using a locally-hosted model via [Ollama](https://ollama.com) — no API key or internet connection required for the notes stage.
+
+### Requirements
+
+| Component | Minimum | Recommended |
+|---|---|---|
+| Ollama | 0.1.x+ | latest |
+| GPU VRAM (for Ollama) | 4 GB (7B q4 model) | 8 GB (7B q4 + headroom) |
+| System RAM (CPU-only) | 8 GB (7B q4) | 16 GB |
+
+**GPU VRAM budget:** Vocolith flushes WhisperX, pyannote, and EasyOCR from GPU memory before invoking Ollama, so both fit on the same card in a single pass. On a 4 GB card with `--model-size small`, the pipeline leaves ~3 GB free for a quantised 7B model.
+
+### Setup
+
+```bash
+# 1. Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Pull a model
+ollama pull mistral:7b        # 4.1 GB q4 — fast, good quality
+ollama pull llama3:8b         # 4.7 GB q4 — strong reasoning
+ollama pull qwen2.5:7b        # 4.7 GB q4 — excellent for technical content
+ollama pull gemma3:12b        # 7.7 GB q4 — higher quality if VRAM allows
+
+# 3. Verify Ollama is running (it auto-starts as a systemd service on Linux)
+ollama list
+```
+
+Ollama listens on `http://localhost:11434` by default. No extra configuration needed.
+
+### Running with local LLM
+
+```bash
+# Simplest — uses the default model from config (mistral:7b)
+vocolith process meeting.mp4 --local
+
+# Choose a specific model
+vocolith process meeting.mp4 --local --local-model llama3:8b
+
+# Technical meeting — more capable model
+vocolith process meeting.mp4 --local --local-model qwen2.5:7b --meeting-type design_review
+
+# Notes-only re-run (e.g. try a different model without re-transcribing)
+vocolith notes meeting_20260409_1430/transcript.md --local --local-model gemma3:12b
+```
+
+### What the pipeline looks like
+
+```
+vocolith process meeting.mp4 --local --local-model mistral:7b
+```
+
+```
+╔══╦══════════════╦══╗
+║░░║              ║░░║
+╠══╣ 👄 ▐/\/\▌    ╠══╣
+║░░║    ▐    ▌  ≡ ║░░║
+╠══╣ 👄 ▐\/\/▌    ╠══╣
+║░░║              ║░░║
+╚══╩══════════════╩══╝
+       V O C O L I T H
+
+Input    : meeting.mp4
+Output   : meeting_20260409_143021/
+
+ 1/9  Extract audio       ffmpeg → audio_raw.wav
+ 2/9  Denoise             noisereduce → audio_clean.wav
+ 3/9  Transcribe          WhisperX large-v2 (float16, batch 16)  ← GPU
+ 4/9  Diarize             pyannote.audio — who speaks when       ← GPU
+      GPU cache flushed ✓ (WhisperX + pyannote released)
+ 5/9  Sample frames       200 frames @ adaptive interval
+ 6/9  OCR                 EasyOCR — names + terminology          ← GPU
+      GPU cache flushed ✓ (EasyOCR released)
+ 7/9  Resolve speakers    voice d-vectors → name mapping
+ 8/9  Confirm speakers    wizard (or --no-confirm to skip)
+ 9/9  Generate notes      Ollama mistral:7b (localhost:11434)     ← GPU
+                          3 templates: executive_summary, email_notes,
+                                       detailed_technical_discussion_notes
+
+Results
+  Segments   : 142
+  Speakers   : 3
+  Language   : en
+  Duration   : 3480s
+
+  Transcript -> meeting_20260409_143021/transcript.md
+  Notes      -> meeting_20260409_143021/executive_summary.md
+  Notes      -> meeting_20260409_143021/email_notes.md
+  Notes      -> meeting_20260409_143021/detailed_technical_discussion_notes.md
+```
+
+### Low-VRAM cards (4 GB or less)
+
+On cards where Whisper + Ollama won't both fit comfortably, use `--model-size small` or the two-pass workflow:
+
+```bash
+# Option A: force small Whisper model — frees ~5 GB for Ollama
+vocolith process meeting.mp4 --local --model-size small
+
+# Option B: two-pass — transcribe first, then notes separately
+vocolith process meeting.mp4 --dry-run
+vocolith notes meeting_20260409_1430/transcript.md --local
+```
+
+### CPU-only (no GPU)
+
+Ollama falls back to CPU automatically if no CUDA device is found. Notes generation for a 1-hour meeting takes roughly 5–20 minutes on a modern CPU depending on the model.
+
+```bash
+# CPU-only: use small Whisper (faster) + local notes
+vocolith process meeting.mp4 --local --model-size small
+```
+
+### Make local LLM the permanent default
+
+In `~/.config/vocolith/config.yaml`:
+
+```yaml
+llm:
+  use_local: true
+  local_model: mistral:7b           # or any model you have pulled
+  local_base_url: http://localhost:11434/v1
+```
+
+With this set, every `vocolith process` and `vocolith notes` run uses Ollama automatically. No `--local` flag needed.
 
 ---
 
@@ -667,7 +842,7 @@ Format: `MD_<SECTION>__<KEY>=value` (double underscore as separator).
 | `max_transcript_chars` | `100000` | Chunk transcript if longer |
 | `chunk_overlap_chars` | `500` | Overlap between chunks |
 | `verify_notes` | `true` | Second LLM pass to remove unsupported claims |
-| `ssl_verify` | `true` | Set `false` for self-signed / corporate proxy endpoints |
+| `ssl_verify` | `false` | Set `true` to enforce SSL verification; `false` works with corporate proxies and self-signed certs |
 
 #### `storage`
 | Key | Default | Description |

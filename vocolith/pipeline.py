@@ -238,14 +238,8 @@ def _run_pipeline_inner(
         ctx.add_error("transcriber", "Transcription produced no output.", fatal=True)
         return ctx
 
-    # Clear GPU cache so OCR (EasyOCR) has full VRAM headroom
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            log.debug("GPU cache cleared after audio pipeline.")
-    except Exception:
-        pass
+    # Release WhisperX + pyannote models and clear CUDA cache so OCR has headroom
+    _flush_gpu("audio pipeline (post transcribe+diarize)")
 
     # ── Stages 5+6: Video pipeline (frame sampling + OCR) ────────────────────
     # Advance overall AFTER the work is done — not before.
@@ -287,6 +281,10 @@ def _run_pipeline_inner(
 
     # ── Write transcript.md ───────────────────────────────────────────────────
     _write_transcript(ctx)
+
+    # Release OCR (EasyOCR) and any remaining GPU tensors before LLM stage.
+    # This gives local Ollama models (--local) free VRAM without a two-pass workflow.
+    _flush_gpu("pre-LLM (post OCR/face)")
 
     # ── Stage 9: Note generation ─────────────────────────────────────────────
     stage_fn(9, "Note Generation")
@@ -432,6 +430,26 @@ def _run_video_stages(ctx: PipelineContext, config: AppConfig,
             )
         except Exception as exc:
             ctx.add_error("face_identifier", f"Face recognition failed: {exc}")
+
+
+def _flush_gpu(label: str = "") -> None:
+    """
+    Force-collect Python objects and release PyTorch CUDA cache.
+
+    Called between heavy GPU stages (WhisperX → OCR → LLM) so each stage
+    starts with maximum available VRAM.  gc.collect() must precede
+    empty_cache() — otherwise model tensors still referenced by Python
+    objects won't be freed and the cache flush has no effect.
+    """
+    try:
+        import gc
+        gc.collect()
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            log.debug("GPU cache flushed: %s", label or "pipeline")
+    except Exception:
+        pass
 
 
 def _write_transcript(ctx: PipelineContext) -> None:

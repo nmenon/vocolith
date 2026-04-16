@@ -70,6 +70,12 @@ def process(
                                             help="Force language code e.g. 'en' (default: auto-detect)"),
     llm_model: Optional[str] = typer.Option(None, "--llm-model",
                                              help="LLM model name for summarization"),
+    local: bool = typer.Option(False, "--local",
+                                help="Use local Ollama endpoint instead of cloud LLM"),
+    local_model: Optional[str] = typer.Option(None, "--local-model",
+                                               help="Local model name (default: from config, e.g. mistral:7b)"),
+    local_url: Optional[str] = typer.Option(None, "--local-url",
+                                             help="Local LLM base URL (default: http://localhost:11434/v1)"),
     attendees: Optional[str] = typer.Option(
         None, "--attendees", "-a",
         help="Comma-separated list of expected attendee names "
@@ -113,6 +119,12 @@ def process(
         cfg.transcription.language = language
     if llm_model:
         cfg.llm.model = llm_model
+    if local:
+        cfg.llm.use_local = True
+    if local_model:
+        cfg.llm.local_model = local_model
+    if local_url:
+        cfg.llm.local_base_url = local_url
 
     # Determine output directory:
     #   1. --output-dir flag
@@ -229,6 +241,12 @@ def notes(
                                                 help="Path to config.yaml"),
     llm_model: Optional[str] = typer.Option(None, "--llm-model",
                                              help="LLM model name for summarization"),
+    local: bool = typer.Option(False, "--local",
+                                help="Use local Ollama endpoint instead of cloud LLM"),
+    local_model: Optional[str] = typer.Option(None, "--local-model",
+                                               help="Local model name (default: from config, e.g. mistral:7b)"),
+    local_url: Optional[str] = typer.Option(None, "--local-url",
+                                             help="Local LLM base URL (default: http://localhost:11434/v1)"),
     meeting_type: Optional[str] = typer.Option(
         None, "--meeting-type", "-m",
         help="Meeting type alias from config (sets template list)"),
@@ -264,6 +282,12 @@ def notes(
 
     if llm_model:
         cfg.llm.model = llm_model
+    if local:
+        cfg.llm.use_local = True
+    if local_model:
+        cfg.llm.local_model = local_model
+    if local_url:
+        cfg.llm.local_base_url = local_url
 
     # Apply meeting type overrides (same logic as process command)
     if meeting_type:
@@ -276,6 +300,12 @@ def notes(
             )
         else:
             console.print(f"[yellow]Warning:[/yellow] Meeting type '{meeting_type}' not found in config.")
+    elif template:
+        # --template with no --meeting-type: run ONLY the requested template.
+        # (In `process`, --template adds to the default set; here the caller
+        # is explicitly asking for one specific output.)
+        tkey = template.replace(".md.j2", "").replace(".j2", "").lower()
+        cfg.templates.run = [tkey]
 
     # Resolve output directory
     from datetime import datetime

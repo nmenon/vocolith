@@ -276,6 +276,13 @@ def _verify_notes(client, notes_dict: dict, transcript_text: str) -> dict:
                 "Verification removed %d action item(s) and %d decision(s) not found in transcript.",
                 removed_actions, removed_decisions,
             )
+        # Verification only checks decisions and action_items.
+        # The LLM often returns extra:{} because the verify prompt does not
+        # mention template-specific extra fields.  Restore the original extra
+        # so custom fields (discussion_sections, qa_highlights, etc.) survive.
+        if not verified.get("extra") and notes_dict.get("extra"):
+            verified["extra"] = notes_dict["extra"]
+            log.debug("Restored extra fields from pre-verification notes.")
         return verified
     except Exception as exc:
         log.warning("Verification pass failed (%s) — using unverified notes.", exc)

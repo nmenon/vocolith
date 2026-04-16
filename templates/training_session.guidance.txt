@@ -1,0 +1,35 @@
+This is a technical training session, not a decision-making meeting.
+
+Identify the presenter (the person doing most of the teaching) and populate
+extra.presenter with their name as a plain string.
+
+Populate extra.learning_objectives as a list of 3-6 bullet strings describing
+what the presenter intended attendees to learn from this session. Derive these
+from the opening framing and the topics covered — do not invent them.
+
+Populate extra.discussion_sections as a list of objects, one per major topic
+or module covered during the training. Each object must have:
+  "title": short topic label (same as its entry in agenda_items)
+  "points": list of 3-8 concise bullet strings — technical facts, constraints,
+            numbers, and concepts the presenter explained under that topic.
+Use only facts stated in the transcript; do not pad with background knowledge.
+
+Populate extra.tools_introduced as a list of strings describing any tools,
+scripts, frameworks, workflows, or processes the presenter demonstrated or
+announced. Include the name, purpose, and current status if mentioned
+(e.g. "internal only", "cloud plugin available", "in development").
+
+Populate extra.qa_highlights as a list of objects for notable Q&A exchanges.
+Each object must have:
+  "asker": name of the person who asked (use "Attendee" if unknown)
+  "question": the question asked, paraphrased concisely
+  "answer": the presenter's answer, paraphrased concisely
+Only include exchanges with substantive technical or practical content.
+Skip trivial acknowledgements or off-topic side comments.
+
+For action_items: capture only explicit commitments made during the session
+(e.g. "send link to tool", "share slides", "follow up with customer").
+Do not invent action items from the training content itself.
+
+Keep agenda_items and discussion_sections focused on the teaching content,
+not on housekeeping or off-topic chatter.
