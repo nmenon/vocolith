@@ -1,0 +1,50 @@
+{# SPDX-License-Identifier: GPL-2.0-only #}
+{# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/ #}
+# {{ title }}
+**Date**: {{ date }} | **Duration**: {{ duration_minutes }} min
+**Attendees**: {{ attendees | join(", ") or "Unknown" }}
+
+## Summary
+{{ summary or "_No summary generated._" }}
+
+{% if agenda_items %}
+## Agenda Items
+{% for item in agenda_items %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+
+{% if key_topics %}
+## Key Topics
+{{ key_topics | join(", ") }}
+{% endif %}
+
+{% if decisions %}
+## Decisions
+{% for d in decisions %}
+- {{ d.description }}{% if d.decided_by %} *({{ d.decided_by }})*{% endif %}
+  {% if d.source_quote %} > "{{ d.source_quote }}"{% if d.timestamp %} `{{ d.timestamp }}`{% endif %}{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if action_items %}
+## Action Items
+| # | Description | Owner | Due | Priority |
+|---|---|---|---|---|
+{% for item in action_items %}
+| {{ loop.index }} | {{ item.description }} | {{ item.assignee or "Unassigned" }} | {{ item.due_date or "—" }} | {{ item.priority or "—" }} |
+{% endfor %}
+
+{% for item in action_items %}
+{% if item.source_quote %}
+> **Action {{ loop.index }}**: "{{ item.source_quote }}"{% if item.timestamp %} `{{ item.timestamp }}`{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if follow_up_questions %}
+## Open Questions
+{% for q in follow_up_questions %}
+- {{ q }}
+{% endfor %}
+{% endif %}

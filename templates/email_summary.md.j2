@@ -1,0 +1,34 @@
+{# SPDX-License-Identifier: GPL-2.0-only #}
+{# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/ #}
+**Subject: Meeting Notes — {{ title }} ({{ date }})**
+
+Hi all,
+
+Here's a quick summary of our {{ duration_minutes }}-minute call on {{ date }}.
+
+**Attendees:** {{ attendees | join(", ") }}
+
+{{ summary }}
+
+{% if decisions %}
+**Decisions made:**
+{% for d in decisions %}
+- {{ d.description }}
+{% endfor %}
+{% endif %}
+
+{% if action_items %}
+**Next steps:**
+{% for item in action_items %}
+- {{ item.description }}{% if item.assignee %} *({{ item.assignee }})*{% endif %}{% if item.due_date %} — by {{ item.due_date }}{% endif %}
+
+{% endfor %}
+{% endif %}
+{% if follow_up_questions %}
+**Open items:**
+{% for q in follow_up_questions %}
+- {{ q }}
+{% endfor %}
+{% endif %}
+
+Thanks,

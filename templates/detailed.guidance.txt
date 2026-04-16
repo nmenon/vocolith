@@ -1,0 +1,7 @@
+Write a thorough, detailed summary (4-6 paragraphs) covering the full arc of the discussion —
+context, what was explored, what was debated, and what was concluded.
+Capture the reasoning behind decisions, not just the outcome.
+For each agenda item, describe what was said, by whom, and what conclusion was reached.
+Include technical details, specific numbers, version names, or system names mentioned.
+Action items should include enough context to be actionable without re-reading the transcript.
+Flag any assumptions made by participants that were not explicitly validated.

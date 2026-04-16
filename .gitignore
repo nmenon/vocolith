@@ -1,0 +1,15 @@
+output/
+profiles/
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.env
+*.wav
+*.mp4
+*.webm
+/tmp/
+logs/

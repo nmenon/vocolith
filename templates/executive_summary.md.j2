@@ -1,0 +1,29 @@
+{# SPDX-License-Identifier: GPL-2.0-only #}
+{# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/ #}
+# {{ title }}
+**{{ date }}** | {{ duration_minutes }} min | {{ attendees | join(", ") }}
+
+## Summary
+{{ summary }}
+
+{% if decisions %}
+## Decisions
+{% for d in decisions %}
+- **{{ d.description }}**{% if d.decided_by %} — {{ d.decided_by }}{% endif %}
+
+{% endfor %}
+{% endif %}
+
+{% if action_items %}
+## Actions
+{% for item in action_items %}
+- {{ item.description }}{% if item.assignee %} *({{ item.assignee }})*{% endif %}{% if item.due_date %} — {{ item.due_date }}{% endif %}
+
+{% endfor %}
+{% endif %}
+{% if follow_up_questions %}
+## Open Items
+{% for q in follow_up_questions %}
+- {{ q }}
+{% endfor %}
+{% endif %}

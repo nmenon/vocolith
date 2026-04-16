@@ -1,0 +1,36 @@
+{# SPDX-License-Identifier: GPL-2.0-only #}
+{# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/ #}
+# Brainstorm Session — {{ title }}
+**Date**: {{ date }} | **Duration**: {{ duration_minutes }} min
+**Participants**: {{ attendees | join(", ") }}
+
+## Context / Problem
+{{ extra.get("problem_statement", summary) }}
+
+{% if extra.get("ideas_generated") %}
+## Ideas Generated
+{% for idea in extra.get("ideas_generated", []) %}
+- {{ idea }}
+{% endfor %}
+{% endif %}
+
+{% if extra.get("ideas_shortlisted") %}
+## Shortlisted Ideas
+{% for idea in extra.get("ideas_shortlisted", []) %}
+- [ ] {{ idea }}
+{% endfor %}
+{% endif %}
+
+{% if decisions %}
+## Decisions / Direction Chosen
+{% for d in decisions %}
+- {{ d.description }}
+{% endfor %}
+{% endif %}
+
+{% if action_items %}
+## Next Steps
+{% for item in action_items %}
+- [ ] {{ item.description }}{% if item.assignee %} — {{ item.assignee }}{% endif %}
+{% endfor %}
+{% endif %}

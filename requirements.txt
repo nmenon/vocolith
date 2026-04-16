@@ -1,0 +1,61 @@
+# ── Meeting Decoder Requirements ─────────────────────────────────────────────
+# Install order matters for some packages (see notes below)
+
+# ── 1. Core transcription + diarization ──────────────────────────────────────
+# WhisperX: install from source (PyPI package is outdated)
+#   pip install git+https://github.com/m-bain/whisperX.git
+#
+# pyannote.audio: requires HuggingFace token + model license acceptance
+#   https://huggingface.co/pyannote/speaker-diarization-3.1
+#   pip install pyannote.audio
+#
+# Torch is a prerequisite (likely already installed):
+#   torch>=2.0
+#   torchaudio>=2.0
+
+# ── 2. Voice speaker embeddings ───────────────────────────────────────────────
+resemblyzer>=0.1.1.dev0
+
+# ── 3. Audio processing ───────────────────────────────────────────────────────
+noisereduce>=3.0
+soundfile>=0.12
+pydub>=0.25
+librosa>=0.10        # audio loading + per-chunk normalisation in voice_embedder
+
+# ── 4. Video + OCR ────────────────────────────────────────────────────────────
+# opencv-python likely already installed
+opencv-python>=4.8
+easyocr>=1.7
+
+# ── 5. Vector database for speaker embeddings ─────────────────────────────────
+chromadb>=0.4
+
+# ── 6. LLM client ─────────────────────────────────────────────────────────────
+openai>=1.0
+httpx>=0.24
+
+# ── 7. Templating ─────────────────────────────────────────────────────────────
+jinja2>=3.1
+
+# ── 8. Config + data models ───────────────────────────────────────────────────
+pydantic>=2.0
+pydantic-settings>=2.0
+pyyaml>=6.0
+
+# ── 9. CLI + output ───────────────────────────────────────────────────────────
+typer>=0.9
+rich>=13.0
+
+# ── 10. Core numerics (likely already installed) ──────────────────────────────
+numpy>=1.24
+
+# ── Optional: Face recognition ────────────────────────────────────────────────
+# Requires cmake + libopenblas-dev. Install separately if needed:
+#   sudo apt-get install cmake libopenblas-dev liblapack-dev
+#   pip install dlib face-recognition
+#
+# Then enable in config.yaml: pipeline.enable_face_recognition: true
+
+# ── System dependencies (not pip-installable) ─────────────────────────────────
+# ffmpeg  (for audio extraction + probing)
+#   sudo apt-get install ffmpeg

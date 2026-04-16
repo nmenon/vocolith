@@ -1,0 +1,6 @@
+Write the summary as 2-3 SHORT sentences only — this will be pasted into an email body.
+Keep the tone professional but conversational, suitable for a team email.
+Focus on: what was decided, what each person needs to do next, and any blocking questions.
+Do NOT include exhaustive topic lists, technical details, or lengthy context.
+If nothing was decided or no actions assigned, say so clearly in one sentence.
+Keep the entire summary under 100 words.

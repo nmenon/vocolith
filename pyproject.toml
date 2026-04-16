@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vocolith"
+version = "0.1.0"
+description = "Local meeting recording transcriber with speaker identification and AI meeting notes"
+requires-python = ">=3.10"
+dependencies = [
+    # Core transcription + diarization
+    # whisperx installed separately: pip install git+https://github.com/m-bain/whisperX.git
+    # pyannote.audio installed separately: pip install pyannote.audio
+
+    # Audio processing
+    "noisereduce>=3.0",
+    "soundfile>=0.12",
+    "pydub>=0.25",
+    "librosa>=0.10",
+
+    # Voice speaker embeddings
+    "resemblyzer>=0.1.1.dev0",
+
+    # Video + OCR
+    "opencv-python>=4.8",
+    "easyocr>=1.7",
+
+    # Vector DB for embeddings
+    "chromadb>=0.4",
+
+    # LLM
+    "openai>=1.0",
+    "httpx>=0.24",
+
+    # Templating
+    "jinja2>=3.1",
+
+    # Config + models
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "pyyaml>=6.0",
+
+    # CLI + output
+    "typer>=0.9",
+    "rich>=13.0",
+
+    # Utilities
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+faces = [
+    # face-recognition requires dlib; may need: apt-get install libopenblas-dev cmake
+    "face-recognition>=1.3",
+]
+
+[project.scripts]
+vocolith = "vocolith.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vocolith"]

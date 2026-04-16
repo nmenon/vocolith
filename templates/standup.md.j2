@@ -1,0 +1,20 @@
+{# SPDX-License-Identifier: GPL-2.0-only #}
+{# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/ #}
+# Standup — {{ date }}
+**Duration**: {{ duration_minutes }} min | **Attendees**: {{ attendees | join(", ") }}
+
+{% for person in attendees %}
+## {{ person }}
+- **Yesterday**: {{ standup.get(person, {}).get("yesterday", "_not mentioned_") }}
+- **Today**: {{ standup.get(person, {}).get("today", "_not mentioned_") }}
+- **Blockers**: {{ standup.get(person, {}).get("blockers", "None") }}
+
+{% endfor %}
+
+{% if action_items %}
+## Action Items
+{% for item in action_items %}
+- [ ] {{ item.description }}{% if item.assignee %} — **{{ item.assignee }}**{% endif %}{% if item.due_date %} *({{ item.due_date }})*{% endif %}
+
+{% endfor %}
+{% endif %}

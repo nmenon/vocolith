@@ -1,0 +1,47 @@
+{# SPDX-License-Identifier: GPL-2.0-only #}
+{# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/ #}
+# Design Review — {{ title }}
+**Date**: {{ date }} | **Duration**: {{ duration_minutes }} min
+**Participants**: {{ attendees | join(", ") }}
+
+## Problem Statement / Background
+{{ extra.get("problem_statement", summary) or "_See summary below._" }}
+
+{% if extra.get("proposals") %}
+## Proposals Discussed
+{% for p in extra.get("proposals", []) %}
+### {{ loop.index }}. {{ p.get("title", "Proposal " + loop.index|string) }}
+{{ p.get("description", "") }}
+- **Pros**: {{ p.get("pros", "_not recorded_") }}
+- **Cons**: {{ p.get("cons", "_not recorded_") }}
+
+{% endfor %}
+{% endif %}
+
+{% if decisions %}
+## Decision & Rationale
+{% for d in decisions %}
+- **{{ d.description }}**{% if d.context %} — {{ d.context }}{% endif %}
+  {% if d.decided_by %}*(Decided by: {{ d.decided_by }})*{% endif %}
+
+{% endfor %}
+{% endif %}
+
+{% if follow_up_questions %}
+## Open Questions
+{% for q in follow_up_questions %}
+- [ ] {{ q }}
+{% endfor %}
+{% endif %}
+
+{% if action_items %}
+## Action Items
+| # | Description | Owner | Due |
+|---|---|---|---|
+{% for item in action_items %}
+| {{ loop.index }} | {{ item.description }} | {{ item.assignee or "Unassigned" }} | {{ item.due_date or "" }} |
+{% endfor %}
+{% endif %}
+
+## Summary
+{{ summary }}

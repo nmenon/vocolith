@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/
+pipeline:
+  enable_face_recognition: false   # requires dlib; install with: pip install vocolith[faces]
+  enable_ocr: true
+  parallel_video_audio: false  # sequential: audio first (GPU), then video/OCR; avoids VRAM contention
+  output_dir: null        # null = create <stem>_<timestamp>/ folder next to the input video
+                          # set to a path to collect all outputs in one place instead
+  debug_dir: "/tmp/vocolith"  # intermediate files: WAVs, frames, diarization.json
+                              # null = <output_dir>/debug/ (keeps debug next to output)
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  format: "wav"
+
+denoiser:
+  enabled: true
+  stationary: false   # false = handles variable noise (recommended for meetings)
+
+transcription:
+  model_size: "auto"   # auto = pick by available VRAM; or: tiny/base/small/medium/large-v2
+  language: "en"       # force English; auto-detect can misfire on WebEx recordings
+  batch_size: "auto"   # auto = 16 (GPU) / 4 (CPU)
+  compute_type: "auto" # auto = float16 (GPU) / int8 (CPU)
+  # Requires HUGGINGFACE_TOKEN env var for pyannote diarization model
+  huggingface_token: null
+
+diarization:
+  enabled: true
+  min_speakers: 1
+  max_speakers: 10
+  # Suppress pyannote internal warnings that are cosmetic and don't affect output:
+  # "std(): degrees of freedom <= 0" and TF32 ReproducibilityWarning.
+  suppress_warnings: true
+
+frame_sampling:
+  interval_seconds: 5
+  change_threshold: 0.002  # skip frame if mean pixel diff < 0.2% (screen shares have very low frame diffs ~0.001-0.005)
+  min_frames: 6            # always keep at least this many frames regardless of change detection
+  # Fraction of frame height to crop from top/bottom for name overlays
+  top_strip_pct: 0.25    # raised from 0.12 - participant thumbnails go ~25% deep in Zoom/WebEx
+  bottom_strip_pct: 0.15
+
+ocr:
+  languages: ["en"]
+  confidence_threshold: 0.5
+  min_name_freq: 2          # name must appear in N+ frames to be counted
+  extract_terminology: true  # also extract domain terms to boost Whisper
+  # Parallel OCR workers (CPU-only; each loads its own EasyOCR model ~300 MB).
+  # 0 = auto (half of CPU cores, capped at 6).  1 = sequential.
+  ocr_workers: 0
+  # When true and CUDA is available, bypass the worker pool and use one GPU
+  # reader instead — sequential but ~7x faster per frame than CPU workers.
+  ocr_gpu_worker: true
+  # Static-noise filter: discard names seen in more than this fraction of
+  # all frames. Browser tabs / window titles appear in every frame;
+  # real participant names only appear when that person's panel is visible.
+  # Set to 1.0 to disable.
+  ocr_noise_freq_threshold: 0.8
+  # GPU/CPU frame split when ocr_gpu_worker=true and ocr_workers>1.
+  # 0.0 = auto: balance GPU (~1 s/frame) vs CPU (~7 s/worker) wall time.
+  # 0.0–1.0: explicit fraction of frames for GPU (e.g. 0.6 = 60% to GPU).
+  ocr_gpu_frame_ratio: 0.0
+  ui_blacklist:
+    - "Mute"
+    - "Unmute"
+    - "Video"
+    - "Participants"
+    - "Chat"
+    - "Share"
+    - "Record"
+    - "Leave"
+    - "End"
+    - "Reactions"
+    - "More"
+    - "Settings"
+    - "Raise Hand"
+    - "View"
+    - "Pin"
+    - "Personal"
+    - "Bookmarks"
+    - "All Bookmarks"
+    - "ext"
+    - "work"
+    - "gmail"
+    - "Inbox"
+    - "Finish update"
+    - "Finish"
+
+face_recognition:
+  tolerance: 0.6       # cosine distance threshold (lower = stricter)
+  model: "hog"         # hog (CPU) | cnn (GPU, more accurate but slower)
+  min_face_height_px: 30
+
+speaker_resolution:
+  # Voice is tried FIRST. High confidence → immediate accept, skip all other signals.
+  # Standard confidence → accept only if no better signal (OCR/addressee) found.
+  voice_similarity_threshold_high: 0.92  # immediate accept — returning speaker, high certainty
+  voice_similarity_threshold: 0.89       # accept as fallback if OCR/addressee silent
+  ocr_match_confidence: 0.70
+  face_match_threshold: 0.60
+  # Addressee inference: "Alice, what do you think?" -> next speaker is Alice
+  addressee_min_votes: 2         # times pattern must repeat before assigning identity
+  # If voice (medium) + OCR or addressee independently name the same person → accept
+  multi_signal_agree_boost: true
+  # Require user confirmation before committing speaker names (default: on).
+  # Voice HIGH is shown with a confidence badge and fast-confirm path.
+  # Use --no-confirm for batch/automated runs where interaction is unwanted.
+  confirm_auto_identified: true
+
+llm:
+  model: "gpt-4o-mini"  # overridden by OPENAI_API_MODEL env var
+  use_local: false
+  local_base_url: "http://localhost:11434/v1"
+  local_model: "mistral:7b"
+  max_tokens: 32000
+  temperature: 0.1          # low = more deterministic, fewer hallucinations
+  # Chunk transcript if it exceeds this many chars before sending to LLM
+  max_transcript_chars: 100000
+  chunk_overlap_chars: 500
+  verify_notes: true        # second LLM pass to cross-check claims against transcript
+  # SSL verify: set false only for self-signed or corporate proxy endpoints
+  # Credentials: set OPENAI_API_KEY + optionally OPENAI_API_MODEL + OPENAI_API_PROVIDER
+  ssl_verify: true
+
+storage:
+  profiles_dir: "~/.cache/vocolith"   # SQLite + ChromaDB stored here
+  db_filename: "speakers.db"           # speaker metadata database
+  chroma_dir: "chroma"                 # voice/face embedding vectors (ChromaDB)
+
+templates:
+  default: "standard"
+  # Templates generated on every run — one output file per template.
+  # Use --template on the CLI to override for a single run.
+  # Set to [] to disable multi-output.
+  run:
+    - "executive_summary"
+    - "email_notes"
+    - "detailed_technical_discussion_notes"
+  user_templates_dir: "~/.config/vocolith/templates"  # drop custom .md.j2 files here
+
+# Named meeting type aliases.
+# Use with: vocolith process meeting.mp4 --meeting-type <alias>
+# Each alias specifies which templates to generate for that meeting pattern.
+# Overrides templates.run for that run only.
+meeting_types:
+  standup:
+    description: "Daily standup — short summary + email recap"
+    templates:
+      - executive_summary
+      - email_notes
+
+  design_review:
+    description: "Technical design review — exec summary + full technical notes"
+    templates:
+      - executive_summary
+      - detailed_technical_discussion_notes
+      - design_review
+
+  customer_call:
+    description: "External customer or partner call"
+    templates:
+      - executive_summary
+      - email_notes
+
+  team_sync:
+    description: "Team sync — all three standard outputs"
+    templates:
+      - executive_summary
+      - email_notes
+      - detailed_technical_discussion_notes
+
+  # Add your own below:
+  # my_meeting_type:
+  #   description: "My custom meeting pattern"
+  #   templates:
+  #     - executive_summary
+  #     - email_notes

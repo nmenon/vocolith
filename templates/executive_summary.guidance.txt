@@ -1,0 +1,5 @@
+Write the summary in exactly 3-5 sentences for a senior executive who was not in the meeting.
+Cover: what was the purpose, what was the key outcome, and what happens next.
+No technical jargon. No speaker names in the summary — attribute only in decisions and actions.
+Omit small talk, tangents, and anything that did not affect the outcome.
+If nothing was decided, say so clearly in one sentence.

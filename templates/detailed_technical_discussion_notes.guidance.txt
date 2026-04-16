@@ -1,0 +1,7 @@
+Write a thorough technical summary (4-6 paragraphs) covering the full arc of the discussion.
+Use the exact technical terminology, product names, version numbers, and signal names spoken in the meeting.
+For each agenda item, describe what was raised, what was debated, and what conclusion was reached.
+Capture the engineering reasoning behind decisions — not just the outcome but why.
+Include specific numbers, register names, timing values, or spec references if mentioned.
+Flag assumptions participants made that were not explicitly validated with [?].
+Action items must have enough context to be acted on without re-reading the transcript.
