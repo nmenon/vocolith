@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import random
 
@@ -179,9 +180,14 @@ class VocolithLLMClient:
 
         raw = self.call(system_prompt, user_prompt, **kwargs).strip()
 
-        # Strip markdown code fences
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        # Strip markdown code fences.
+        # The LLM sometimes adds a preamble before the block ("Here is the JSON:
+        # ```json ...```"), so check for a fence anywhere in the response, not
+        # just at the start.  Prefer the fenced content when found — it is
+        # usually cleaner than trying to json.loads() the whole reply.
+        fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", raw, re.DOTALL)
+        if fence_match:
+            raw = fence_match.group(1).strip()
 
         # Primary parse
         try:
