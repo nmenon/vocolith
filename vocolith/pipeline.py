@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from vocolith.config import AppConfig
 from vocolith.models.transcript import DiarizedTranscript
@@ -101,6 +101,7 @@ def run_pipeline(
     template: str | None = None,
     no_faces: bool = False,
     no_ocr: bool = False,
+    interrupt_check: Optional[Callable[[], bool]] = None,
 ) -> PipelineContext:
     """
     Execute the full meeting decoder pipeline.
@@ -160,6 +161,7 @@ def run_pipeline(
             ctx, config, overall, _stage,
             dry_run=dry_run, template=template,
             no_faces=no_faces, no_ocr=no_ocr,
+            interrupt_check=interrupt_check,
         )
 
 
@@ -172,8 +174,14 @@ def _run_pipeline_inner(
     template: str | None,
     no_faces: bool,
     no_ocr: bool,
+    interrupt_check: Optional[Callable[[], bool]] = None,
 ) -> "PipelineContext":
     """Execute pipeline stages within the active progress context."""
+
+    def _check() -> bool:
+        """Return True if the user wants to abort (Ctrl+C confirmed)."""
+        return bool(interrupt_check and interrupt_check())
+
     from vocolith.stages.audio_extractor import extract_audio, AudioExtractionError
     from vocolith.stages.audio_denoiser import denoise_audio
     from vocolith.utils.progress import advance_task, add_task, complete_task
@@ -190,6 +198,9 @@ def _run_pipeline_inner(
         ctx.add_error("audio_extractor", str(exc), fatal=True)
         return ctx
 
+    if _check():
+        return ctx
+
     # ── Stage 2: Denoise ─────────────────────────────────────────────────────
     stage_fn(2, "Audio Denoising")
     if config.denoiser.enabled:
@@ -201,6 +212,9 @@ def _run_pipeline_inner(
         except Exception as exc:
             ctx.add_error("denoiser", f"Denoising failed: {exc}. Using raw audio.")
     advance_task(overall_task)
+
+    if _check():
+        return ctx
 
     # ── Scale frame sampling interval by video duration ─────────────────────
     # A 1h meeting at 5s interval → ~740 frames → hour-long OCR run.
@@ -228,10 +242,16 @@ def _run_pipeline_inner(
     _run_transcription(ctx, config)
     advance_task(overall_task)   # 3/9 — transcription done
 
+    if _check():
+        return ctx
+
     # ── Stage 4: Diarization ─────────────────────────────────────────────────
     stage_fn(4, "Diarization")
     _run_diarization(ctx, config)
     advance_task(overall_task)   # 4/9 — diarization done
+
+    if _check():
+        return ctx
 
     # Abort early if transcription failed — no point running OCR
     if ctx.transcript is None:
@@ -250,6 +270,9 @@ def _run_pipeline_inner(
     advance_task(overall_task)  # stage 5 complete
     stage_fn(6, "OCR complete")
     advance_task(overall_task)  # stage 6 complete
+
+    if _check():
+        return ctx
 
     # ── Stage 7b: Apply OCR terminology correction ───────────────────────────
     if ctx.ocr_vocabulary and ctx.transcript:

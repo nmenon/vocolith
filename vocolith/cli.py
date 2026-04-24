@@ -3,14 +3,72 @@
 """CLI entry point for meeting-decoder."""
 from __future__ import annotations
 import logging
+import os
 from pathlib import Path
 from typing import Optional
+
+import signal
+import sys
+import threading
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from vocolith.utils.logging_setup import setup_logging
+
+
+# ---------------------------------------------------------------------------
+# Ctrl+C handling
+# ---------------------------------------------------------------------------
+
+_interrupt_event = threading.Event()
+
+
+def _sigint_handler(signum: int, frame: object) -> None:
+    """Replace default SIGINT so KeyboardInterrupt is NOT raised mid-stage.
+
+    First Ctrl+C: sets flag, prints "finishing stage" notice.
+    Second Ctrl+C (while flag already set): exits immediately with code 130.
+    """
+    if _interrupt_event.is_set():
+        # Restore default handler and re-deliver the signal — the OS then
+        # raises KeyboardInterrupt through normal Python machinery, which
+        # properly unwinds the stack and runs finally blocks.
+        sys.stderr.write("\n\033[31m[Second Ctrl+C — exiting]\033[0m\n")
+        sys.stderr.flush()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
+        return
+    _interrupt_event.set()
+    sys.stderr.write(
+        "\n\033[33m[Ctrl+C — finishing current stage, then pausing]\033[0m\n"
+    )
+    sys.stderr.flush()
+
+
+def _prompt_quit() -> bool:
+    """Ask the user to confirm quit after Ctrl+C. Returns True if confirmed."""
+    try:
+        return typer.confirm("\nReally quit?", default=True)
+    except (KeyboardInterrupt, EOFError):
+        return True
+
+
+def _check_interrupt(console: Console) -> bool:
+    """Called at pipeline stage boundaries.
+
+    Returns True  -> abort (caller should stop and return).
+    Returns False -> user chose to continue; pipeline keeps running.
+    """
+    if not _interrupt_event.is_set():
+        return False
+    _interrupt_event.clear()
+    if _prompt_quit():
+        console.print("[red]Aborted.[/red]")
+        return True
+    console.print("[dim]Resuming...[/dim]")
+    return False
 
 app = typer.Typer(
     name="meeting-decoder",
@@ -178,17 +236,23 @@ def process(
         console.print(f"Attendees  : {', '.join(attendees_list)}")
 
     from vocolith.pipeline import run_pipeline
-    ctx = run_pipeline(
-        video_path=video,
-        output_dir=output_dir,
-        config=cfg,
-        debug_dir=resolved_debug_dir,
-        attendees=attendees_list,
-        dry_run=dry_run,
-        template=template,
-        no_faces=no_faces,
-        no_ocr=no_ocr,
-    )
+    _interrupt_event.clear()
+    old_handler = signal.signal(signal.SIGINT, _sigint_handler)
+    try:
+        ctx = run_pipeline(
+            video_path=video,
+            output_dir=output_dir,
+            config=cfg,
+            debug_dir=resolved_debug_dir,
+            attendees=attendees_list,
+            dry_run=dry_run,
+            template=template,
+            no_faces=no_faces,
+            no_ocr=no_ocr,
+            interrupt_check=lambda: _check_interrupt(console),
+        )
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
 
     # Summary
     console.print("\n[bold]Results[/bold]")
@@ -343,11 +407,21 @@ def notes(
 
     # Run note generation (Stage 9 only)
     from vocolith.stages.note_generator import generate_notes
-    try:
-        ctx = generate_notes(ctx, template=template)
-    except Exception as exc:
-        console.print(f"[red]Note generation failed:[/red] {exc}")
-        raise typer.Exit(1)
+    while True:
+        try:
+            ctx = generate_notes(ctx, template=template)
+            break
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            console.print(f"[red]Note generation failed:[/red] {exc}")
+            raise typer.Exit(1)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Note generation interrupted.[/yellow]")
+            if _prompt_quit():
+                console.print("[red]Aborted.[/red]")
+                raise typer.Exit(130)
+            console.print("[dim]Retrying...[/dim]")
 
     # Summary
     note_files = sorted(
@@ -385,7 +459,21 @@ def identify(
     from vocolith.config import load_config
     from vocolith.stages.identifier_wizard import run_wizard
     cfg = load_config(config_file)
-    run_wizard(output_dir, config=cfg)
+    while True:
+        try:
+            run_wizard(output_dir, config=cfg)
+            break
+        except typer.Exit:
+            raise
+        except Exception as exc:
+            console.print(f"[red]Wizard error:[/red] {exc}")
+            raise typer.Exit(1)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Wizard interrupted.[/yellow]")
+            if _prompt_quit():
+                console.print("[red]Aborted.[/red]")
+                raise typer.Exit(130)
+            console.print("[dim]Restarting wizard...[/dim]")
 
 
 # ─── Profiles subcommands ────────────────────────────────────────────────────
