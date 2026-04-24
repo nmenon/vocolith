@@ -25,7 +25,11 @@ from typing import Any
 
 from rich.console import Console
 
-_status_console = Console()   # standalone fallback when no progress bar active
+# Single shared Console instance used by both the progress bar and
+# the RichHandler in logging_setup.py.  This ensures that log output
+# (including WARNING messages during note verification) is routed through
+# the same Live context as the progress bar so it never corrupts the display.
+_console = Console()
 
 from rich.progress import (
     BarColumn,
@@ -81,7 +85,7 @@ def status(message: str, style: str = "dim") -> None:
     if _active is not None:
         _active.console.print(f"  [dim]•[/dim] {message}", style=style)
     else:
-        _status_console.print(f"  [dim]•[/dim] {message}", style=style)
+        _console.print(f"  [dim]•[/dim] {message}", style=style)
 
 
 def complete_task(task_id: TaskID | None, description: str | None = None) -> None:
@@ -121,6 +125,7 @@ def pipeline_progress():
         # stages have wildly different durations so rate-based ETA is wrong.
         # Sub-task bars (diarize, OCR, notes) use their own add_task() calls
         # which inherit these columns — they are uniform-cost so ETA is valid there.
+        console=_console,
         refresh_per_second=4,
         expand=False,
     )

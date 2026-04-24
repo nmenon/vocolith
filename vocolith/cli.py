@@ -300,7 +300,7 @@ def notes(
     output_dir: Optional[Path] = typer.Option(
         None, "--output-dir", "-o",
         help="Directory to write note files "
-             "(default: same directory as the transcript)"),
+             "(default: timestamped subdirectory next to transcript)"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c",
                                                 help="Path to config.yaml"),
     llm_model: Optional[str] = typer.Option(None, "--llm-model",
@@ -407,21 +407,24 @@ def notes(
 
     # Run note generation (Stage 9 only)
     from vocolith.stages.note_generator import generate_notes
-    while True:
-        try:
-            ctx = generate_notes(ctx, template=template)
-            break
-        except typer.Exit:
-            raise
-        except Exception as exc:
-            console.print(f"[red]Note generation failed:[/red] {exc}")
-            raise typer.Exit(1)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Note generation interrupted.[/yellow]")
-            if _prompt_quit():
-                console.print("[red]Aborted.[/red]")
-                raise typer.Exit(130)
-            console.print("[dim]Retrying...[/dim]")
+    from vocolith.utils.progress import pipeline_progress, pause_progress
+    with pipeline_progress():
+        while True:
+            try:
+                ctx = generate_notes(ctx, template=template)
+                break
+            except typer.Exit:
+                raise
+            except Exception as exc:
+                console.print(f"[red]Note generation failed:[/red] {exc}")
+                raise typer.Exit(1)
+            except KeyboardInterrupt:
+                with pause_progress():
+                    console.print("\n[yellow]Note generation interrupted.[/yellow]")
+                    if _prompt_quit():
+                        console.print("[red]Aborted.[/red]")
+                        raise typer.Exit(130)
+                console.print("[dim]Retrying...[/dim]")
 
     # Summary
     note_files = sorted(

@@ -2,10 +2,8 @@
 # Copyright (C) 2026 Texas Instruments Incorporated - https://www.ti.com/
 """Rich-based logging configuration."""
 import logging
-from rich.console import Console
 from rich.logging import RichHandler
-
-console = Console()
+from vocolith.utils.progress import _console as console
 
 # Third-party loggers that are always noisy regardless of level
 _ALWAYS_QUIET = (
