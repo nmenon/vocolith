@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date as DateType
-from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -180,7 +179,6 @@ def generate_notes(
     from vocolith.utils.progress import add_task, advance_task, update_task
     notes_task = add_task(f"Notes (0/{len(run_list)} templates)", total=len(run_list))
 
-    written: list[Path] = []
     for i, tkey in enumerate(run_list):
         tkey = tkey.replace(".md.j2", "").replace(".j2", "").lower()
         template_guidance = _TEMPLATE_GUIDANCE.get(tkey, "") \
@@ -193,6 +191,8 @@ def generate_notes(
 
         max_chars = cfg.llm.max_transcript_chars
         log.info("[%d/%d] %s (%.0f chars)...", i + 1, len(run_list), tkey, len(transcript_text))
+        update_task(notes_task,
+                    description=f"Notes ({i+1}/{len(run_list)}) generating: {tkey}")
 
         if len(transcript_text) <= max_chars:
             notes_dict = _generate_single(client, system_prompt, transcript_text)
@@ -203,6 +203,8 @@ def generate_notes(
             )
 
         if cfg.llm.verify_notes and notes_dict:
+            update_task(notes_task,
+                        description=f"Notes ({i+1}/{len(run_list)}) verifying: {tkey}")
             notes_dict = _verify_notes(client, notes_dict, transcript_text)
 
         notes = _dict_to_notes(notes_dict, ctx)
@@ -210,9 +212,8 @@ def generate_notes(
         rendered = render_notes(notes, tkey, cfg.templates.user_templates_dir)
         notes_path = ctx.output_dir / f"{tkey}.md"
         notes_path.write_text(rendered, encoding="utf-8")
-        written.append(notes_path)
         update_task(notes_task,
-                    description=f"Notes ({i+1}/{len(run_list)} templates — last: {tkey})")
+                    description=f"Notes ({i+1}/{len(run_list)}) done: {tkey}")
         advance_task(notes_task)
         log.info("  -> %s", notes_path.name)
 

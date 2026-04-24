@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import signal
 import sys
@@ -13,6 +13,7 @@ import threading
 
 import typer
 from rich.console import Console
+from vocolith.utils.progress import _console as console  # shared with progress bar and logging
 from rich.table import Table
 
 from vocolith.utils.logging_setup import setup_logging
@@ -82,7 +83,6 @@ app.add_typer(profiles_app,  name="profiles")
 app.add_typer(templates_app, name="templates")
 app.add_typer(mtypes_app,    name="meeting-types")
 
-console = Console()
 log = logging.getLogger(__name__)
 
 # Film-strip border  |  lips  |  voice device + wave  |  ≡ notes
@@ -314,9 +314,9 @@ def notes(
     meeting_type: Optional[str] = typer.Option(
         None, "--meeting-type", "-m",
         help="Meeting type alias from config (sets template list)"),
-    template: Optional[str] = typer.Option(
+    template: Optional[List[str]] = typer.Option(
         None, "--template", "-t",
-        help="Add a single extra template (or use as the only template)"),
+        help="Template(s) to generate — repeat for multiple: -t executive_summary -t detailed_technical_discussion_notes"),
     attendees: Optional[str] = typer.Option(
         None, "--attendees", "-a",
         help="Comma-separated attendee names — used as hints in the LLM prompt"),
@@ -365,11 +365,10 @@ def notes(
         else:
             console.print(f"[yellow]Warning:[/yellow] Meeting type '{meeting_type}' not found in config.")
     elif template:
-        # --template with no --meeting-type: run ONLY the requested template.
-        # (In `process`, --template adds to the default set; here the caller
-        # is explicitly asking for one specific output.)
-        tkey = template.replace(".md.j2", "").replace(".j2", "").lower()
-        cfg.templates.run = [tkey]
+        # --template with no --meeting-type: run ONLY the requested template(s).
+        cfg.templates.run = [
+            t.replace(".md.j2", "").replace(".j2", "").lower() for t in template
+        ]
 
     # Resolve output directory
     from datetime import datetime
@@ -411,7 +410,7 @@ def notes(
     with pipeline_progress():
         while True:
             try:
-                ctx = generate_notes(ctx, template=template)
+                ctx = generate_notes(ctx, template=None)
                 break
             except typer.Exit:
                 raise

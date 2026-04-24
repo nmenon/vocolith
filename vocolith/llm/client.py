@@ -183,11 +183,11 @@ class VocolithLLMClient:
         # Strip markdown code fences.
         # The LLM sometimes adds a preamble before the block ("Here is the JSON:
         # ```json ...```"), so check for a fence anywhere in the response, not
-        # just at the start.  Prefer the fenced content when found — it is
-        # usually cleaner than trying to json.loads() the whole reply.
-        fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", raw, re.DOTALL)
-        if fence_match:
-            raw = fence_match.group(1).strip()
+        # just at the start.  Use findall and prefer the LAST match — if the LLM
+        # emits multiple fences, the final one is most likely the clean JSON output.
+        fence_matches = re.findall(r"```(?:json)?\s*\n(.*?)```", raw, re.DOTALL)
+        if fence_matches:
+            raw = fence_matches[-1].strip()
 
         # Primary parse
         try:
