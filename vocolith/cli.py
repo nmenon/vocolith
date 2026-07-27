@@ -138,6 +138,18 @@ def process(
         None, "--attendees", "-a",
         help="Comma-separated list of expected attendee names "
              "(e.g. 'Alice Smith, Bob Jones') — used as hints for speaker identification"),
+    reference_transcript: Optional[Path] = typer.Option(
+        None, "--reference-transcript",
+        help="Path to a Teams-generated .vtt transcript to cross-reference for speaker accuracy "
+             "(hybrid meetings: names remote attendees confidently, flags the shared room mic)"),
+    room_attendees: Optional[str] = typer.Option(
+        None, "--room-attendees",
+        help="Comma-separated subset of --attendees sharing one conference-room mic — "
+             "their diarization label is auto-routed into the split wizard"),
+    room_label: Optional[str] = typer.Option(
+        None, "--room-label",
+        help="Exact speaker name as it appears in --reference-transcript for the shared "
+             "room device, if known (skips the ambiguous-coverage heuristic)"),
     template: Optional[str] = typer.Option(None, "--template", "-t",
                                             help="Add a single extra template to this run"),
     meeting_type: Optional[str] = typer.Option(None, "--meeting-type", "-m",
@@ -235,6 +247,16 @@ def process(
     if attendees_list:
         console.print(f"Attendees  : {', '.join(attendees_list)}")
 
+    # Reference transcript / room-mixed cross-referencing
+    if reference_transcript and not reference_transcript.exists():
+        console.print(f"[red]Error:[/red] Reference transcript not found: {reference_transcript}")
+        raise typer.Exit(1)
+    room_attendees_list = [a.strip() for a in (room_attendees or "").split(",") if a.strip()]
+    if reference_transcript:
+        console.print(f"Reference  : {reference_transcript}")
+    if room_attendees_list:
+        console.print(f"Room mic   : {', '.join(room_attendees_list)}")
+
     from vocolith.pipeline import run_pipeline
     _interrupt_event.clear()
     old_handler = signal.signal(signal.SIGINT, _sigint_handler)
@@ -250,6 +272,9 @@ def process(
             no_faces=no_faces,
             no_ocr=no_ocr,
             interrupt_check=lambda: _check_interrupt(console),
+            reference_transcript=reference_transcript,
+            room_attendees=room_attendees_list,
+            room_label=room_label,
         )
     finally:
         signal.signal(signal.SIGINT, old_handler)
@@ -933,6 +958,418 @@ def mtypes_list(
     console.print()
     console.print("[dim]Use with: vocolith process meeting.mp4 --meeting-type <alias>[/dim]")
     console.print("[dim]Define your own in the [meeting_types] section of config.yaml[/dim]")
+
+
+# ─── Capture helpers ──────────────────────────────────────────────────────────
+
+def _resolve_screen_device(spec: str, devices: list):  # -> CaptureDevice | None
+    """Resolve a user-supplied screen specifier to a CaptureDevice.
+
+    Matching order (first match wins):
+    1. Exact device ID (e.g. ``:0.0+3440,0``)
+    2. Monitor index (``0``, ``1``, …) — maps to the Nth screen device
+    3. Case-insensitive name substring (e.g. ``DP-0``, ``dp-2``, ``full``)
+
+    Returns None when no device matches.
+    """
+    screens = [d for d in devices if d.kind == "screen"]
+
+    # 1. Exact ID match
+    for d in screens:
+        if d.id == spec:
+            return d
+
+    # 2. Integer index into screen list
+    if spec.isdigit():
+        idx = int(spec)
+        if 0 <= idx < len(screens):
+            return screens[idx]
+
+    # 3. Case-insensitive substring of device name
+    spec_lower = spec.lower()
+    for d in screens:
+        if spec_lower in d.name.lower():
+            return d
+
+    return None
+
+
+# ─── Capture command ──────────────────────────────────────────────────────────
+
+@app.command()
+def capture(
+    output_dir: Optional[Path] = typer.Option(
+        None, "--output-dir", "-o",
+        help="Directory for the recording and all generated notes "
+             "(default: timestamped folder next to where you run vocolith)"),
+    audio: Optional[str] = typer.Option(
+        None, "--audio",
+        help="Audio device ID to record from (default: auto-select system loopback). "
+             "Run --list-devices to see available IDs."),
+    screen: bool = typer.Option(
+        False, "--screen/--no-screen",
+        help="Also capture the screen (enables OCR name detection in post-processing). "
+             "Default: off (audio-only)."),
+    screen_device: Optional[str] = typer.Option(
+        None, "--screen-device",
+        help="Screen device ID override (default: auto-detect from $DISPLAY / $WAYLAND_DISPLAY)"),
+    list_devices: bool = typer.Option(
+        False, "--list-devices", "-l",
+        help="List available audio and screen capture devices, then exit."),
+    duration: Optional[str] = typer.Option(
+        None, "--duration", "-d",
+        help="Maximum recording duration, e.g. '90m', '1h30m', '3600s'. "
+             "Stops automatically when reached. Ctrl+C always works too."),
+    no_process: bool = typer.Option(
+        False, "--no-process",
+        help="Record only; skip transcript and note generation."),
+    # ── post-processing pass-through (same as vocolith process) ───────────────
+    config_file: Optional[Path] = typer.Option(None, "--config", "-c",
+                                                help="Path to config.yaml"),
+    model_size: Optional[str] = typer.Option(None, "--model-size",
+                                              help="Whisper model: tiny|base|small|medium|large-v2|auto"),
+    language: Optional[str] = typer.Option(None, "--language",
+                                            help="Force language code e.g. 'en'"),
+    llm_model: Optional[str] = typer.Option(None, "--llm-model",
+                                             help="LLM model for summarization"),
+    local: bool = typer.Option(False, "--local", help="Use local Ollama instead of cloud LLM"),
+    local_model: Optional[str] = typer.Option(None, "--local-model"),
+    local_url: Optional[str] = typer.Option(None, "--local-url"),
+    attendees: Optional[str] = typer.Option(
+        None, "--attendees", "-a",
+        help="Comma-separated attendee names used as speaker ID hints"),
+    reference_transcript: Optional[Path] = typer.Option(
+        None, "--reference-transcript",
+        help="Path to a Teams-generated .vtt transcript to cross-reference for speaker accuracy"),
+    room_attendees: Optional[str] = typer.Option(
+        None, "--room-attendees",
+        help="Comma-separated subset of --attendees sharing one conference-room mic"),
+    room_label: Optional[str] = typer.Option(
+        None, "--room-label",
+        help="Exact speaker name as it appears in --reference-transcript for the shared room device"),
+    template: Optional[str] = typer.Option(None, "--template", "-t",
+                                            help="Extra note template to generate"),
+    meeting_type: Optional[str] = typer.Option(None, "--meeting-type", "-m",
+                                                help="Meeting type alias from config"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Transcribe only; skip LLM notes"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show INFO logs"),
+    debug_flag: bool = typer.Option(False, "--debug", help="Show DEBUG logs"),
+) -> None:
+    """Record a meeting in real-time, then automatically transcribe and generate notes.
+
+    Uses ffmpeg to capture audio (and optionally screen) from the current machine.
+    When you stop recording (Ctrl+C or --duration reached), vocolith automatically
+    runs the full pipeline on the captured file — the same as running
+    'vocolith process' on a pre-recorded video.
+
+    \b
+    Quick start:
+        vocolith capture                           # record system audio, auto-process
+        vocolith capture --screen                  # + screen for OCR/face detection
+        vocolith capture --list-devices            # see what's available
+        vocolith capture --duration 90m            # auto-stop after 90 minutes
+        vocolith capture --audio default.monitor   # explicit device
+
+    \b
+    OS support:
+        Linux   PulseAudio/PipeWire  (system loopback auto-detected)
+                X11/XWayland screen capture via x11grab
+                Pure-Wayland screen capture via PipeWire (portal dialog required)
+        macOS   AVFoundation — system audio needs BlackHole or Loopback installed
+        Windows WASAPI loopback (built-in) + GDI screen grab
+    """
+    setup_logging(verbose=verbose, debug=debug_flag)
+
+    from vocolith.capture.devices import discover_devices, get_default_audio, get_default_screen
+
+    # ── --list-devices: show table and exit ────────────────────────────────────
+    if list_devices:
+        try:
+            devs = discover_devices()
+        except RuntimeError as exc:
+            console.print(f"[red]Device discovery error:[/red] {exc}")
+            raise typer.Exit(1)
+
+        from rich.table import Table as RTable
+        tbl = RTable("Kind", "Format", "Device ID", "Name")
+        for d in devs:
+            loopback = " [dim](loopback)[/dim]" if d.is_loopback else ""
+            tbl.add_row(d.kind, d.fmt, d.id, f"{d.name}{loopback}")
+        console.print(tbl)
+        console.print()
+        console.print("[dim]Use --audio <Device ID> or --screen-device <Device ID> to override.[/dim]")
+        raise typer.Exit(0)
+
+    # ── Resolve devices ────────────────────────────────────────────────────────
+    try:
+        all_devices = discover_devices()
+    except RuntimeError as exc:
+        console.print(f"[red]Device discovery error:[/red] {exc}")
+        raise typer.Exit(1)
+
+    # Audio
+    if audio:
+        from vocolith.capture.devices import CaptureDevice as _CD
+        audio_dev = next((d for d in all_devices if d.id == audio), None)
+        if audio_dev is None:
+            # User specified a raw device ID not in the discovered list — trust them.
+            # Infer format from platform.
+            import platform as _pl
+            _os = _pl.system()
+            _fmt = {"Linux": "pulse", "Darwin": "avfoundation", "Windows": "wasapi"}.get(_os, "pulse")
+            audio_dev = _CD(id=audio, name=audio, kind="audio_mic", fmt=_fmt)
+    else:
+        audio_dev = get_default_audio(all_devices)
+
+    if audio_dev is None:
+        console.print(
+            "[red]No audio capture device found.[/red]\n"
+            "[dim]Run 'vocolith capture --list-devices' to see what's available.\n"
+            "On macOS, system audio requires BlackHole (https://existential.audio/blackhole/)[/dim]"
+        )
+        raise typer.Exit(1)
+
+    # Screen (optional)
+    screen_dev = None
+    if screen:
+        if screen_device:
+            # Accept: exact device ID  OR  monitor name substring (e.g. "DP-0", "1").
+            screen_dev = _resolve_screen_device(screen_device, all_devices)
+            if screen_dev is None:
+                console.print(
+                    f"[red]Unknown screen device:[/red] {screen_device!r}\n"
+                    "[dim]Run 'vocolith capture --list-devices' to see valid IDs and names.[/dim]"
+                )
+                raise typer.Exit(1)
+        else:
+            screen_dev = get_default_screen(all_devices)
+        if screen_dev is None:
+            console.print("[yellow]Warning:[/yellow] no screen device found — recording audio only.")
+        elif "pipewire" in screen_dev.fmt.lower():
+            console.print(
+                "[yellow]Note:[/yellow] Wayland screen capture requires the PipeWire portal.\n"
+                "[dim]A system dialog will appear asking you to select a window/screen to share.[/dim]"
+            )
+
+    # ── Resolve output directory ───────────────────────────────────────────────
+    from datetime import datetime
+    from vocolith.config import load_config
+    cfg = load_config(config_file)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if output_dir is None:
+        if cfg.pipeline.output_dir:
+            output_dir = Path(cfg.pipeline.output_dir) / f"capture_{ts}"
+        else:
+            output_dir = Path.cwd() / f"capture_{ts}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = ".mkv" if screen_dev else ".wav"
+    recording_path = output_dir / f"recording{ext}"
+
+    # ── Parse duration ─────────────────────────────────────────────────────────
+    max_secs: Optional[float] = None
+    if duration:
+        from vocolith.capture.recorder import parse_duration
+        try:
+            max_secs = parse_duration(duration)
+        except ValueError as exc:
+            console.print(f"[red]Invalid --duration:[/red] {exc}")
+            raise typer.Exit(1)
+
+    # ── Banner + recording notice ──────────────────────────────────────────────
+    _print_banner()
+    console.print(f"[bold green]Recording[/bold green]  →  {recording_path}")
+    console.print(f"  Audio  : [cyan]{audio_dev.name}[/cyan]")
+    if screen_dev:
+        console.print(f"  Screen : [cyan]{screen_dev.name}[/cyan]")
+    else:
+        console.print(f"  Screen : [dim]off (audio-only)[/dim]")
+    if max_secs:
+        h = int(max_secs // 3600)
+        m = int((max_secs % 3600) // 60)
+        s = int(max_secs % 60)
+        limit_str = f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
+        console.print(f"  Limit  : [yellow]{limit_str}[/yellow]")
+    _is_tty = sys.stdin.isatty()
+    _stop_hint = "  [q/Enter] stop  [Ctrl+C] abort" if _is_tty else "  Ctrl+C to stop"
+    console.print()
+    console.print(f"[bold]Recording…[/bold]  [dim]{_stop_hint}[/dim]")
+    console.print()
+
+    # ── Start recording ────────────────────────────────────────────────────────
+    from vocolith.capture.recorder import Recorder
+    recorder = Recorder()
+    recorder.start(recording_path, audio_dev, screen_dev, max_secs)
+
+    # Intercept Ctrl+C to signal a clean stop (not a process kill).
+    import signal as _signal
+    _stop_requested = threading.Event()
+
+    def _capture_sigint(_sig: int, _frm: object) -> None:
+        if _stop_requested.is_set():
+            sys.stderr.write("\n\033[31m[Force-stopping]\033[0m\n")
+            sys.stderr.flush()
+            raise SystemExit(130)
+        _stop_requested.set()
+        # Write directly so the \r status line is not mangled by Rich.
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    old_handler = _signal.signal(_signal.SIGINT, _capture_sigint)
+
+    # ── Interactive recording loop ─────────────────────────────────────────────
+    # On a real TTY we put stdin in cbreak mode so single keypresses are
+    # delivered immediately without pressing Enter, and without echoing them.
+    # On a non-TTY (pipe, script) we fall back to Ctrl+C only.
+    import time as _time
+
+    _STOP_KEYS = frozenset(("q", "Q", "s", "S", "\r", "\n", " "))
+
+    def _fmt_elapsed(secs: float) -> str:
+        h = int(secs // 3600)
+        m = int((secs % 3600) // 60)
+        s = int(secs % 60)
+        return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+    # Import platform-specific modules up front so they're always bound.
+    _termios = None
+    _select = None
+    _orig_tty = None
+
+    try:
+        if _is_tty:
+            import tty as _tty_mod
+            import termios as _termios
+            import select as _select
+            _orig_tty = _termios.tcgetattr(sys.stdin)
+            _tty_mod.setcbreak(sys.stdin.fileno())  # single-char, no echo, Ctrl+C still works
+
+        while recorder.is_running() and not _stop_requested.is_set():
+            label = _fmt_elapsed(recorder.elapsed_seconds())
+            # Overwrite the same line with \r — bypass Rich to keep it predictable.
+            # Use ANSI green ● only on a real TTY (where colours render).
+            dot = "\033[32m●\033[0m" if _is_tty else "●"
+            sys.stdout.write(f"\r  {dot} REC {label}   ")
+            sys.stdout.flush()
+
+            if _is_tty and _select is not None:
+                # Poll stdin for up to 1 s, then redraw the counter.
+                rlist, _, _ = _select.select([sys.stdin], [], [], 1.0)
+                if rlist:
+                    key = sys.stdin.read(1)
+                    if key in _STOP_KEYS:
+                        _stop_requested.set()
+                        break
+            else:
+                _time.sleep(1.0)
+
+    finally:
+        # Always restore terminal and SIGINT handler.
+        if _orig_tty is not None and _termios is not None:
+            _termios.tcsetattr(sys.stdin, _termios.TCSADRAIN, _orig_tty)
+        _signal.signal(_signal.SIGINT, old_handler)
+
+    sys.stdout.write("\n")  # move past the \r status line
+    sys.stdout.flush()
+
+    result = recorder.stop()
+
+    if not result.output_path.exists() or result.output_path.stat().st_size < 4096:
+        console.print(
+            f"[red]Recording failed or produced an empty file:[/red] {result.output_path}\n"
+            "[dim]Check that the audio device is active and not muted.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    dur_m = int(result.duration_seconds) // 60
+    dur_s = int(result.duration_seconds) % 60
+    console.print(f"[green]Recorded {dur_m}m{dur_s:02d}s[/green]  →  {result.output_path}")
+    console.print(f"  Size: {result.output_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+    if no_process:
+        console.print("[dim]--no-process: skipping transcription.[/dim]")
+        raise typer.Exit(0)
+
+    # ── Auto-process: hand the recording to the existing pipeline ──────────────
+    console.print()
+    console.print("[bold]Processing recording...[/bold]")
+    console.print()
+
+    # Apply CLI overrides to config
+    if model_size:
+        cfg.transcription.model_size = model_size
+    if language:
+        cfg.transcription.language = language
+    if llm_model:
+        cfg.llm.model = llm_model
+    if local:
+        cfg.llm.use_local = True
+    if local_model:
+        cfg.llm.local_model = local_model
+    if local_url:
+        cfg.llm.local_base_url = local_url
+    if meeting_type:
+        mt = cfg.meeting_types.get(meeting_type)
+        if mt:
+            cfg.templates.run = mt.templates
+
+    resolved_debug_dir = Path(cfg.pipeline.debug_dir) if cfg.pipeline.debug_dir else None
+    attendees_list = [a.strip() for a in (attendees or "").split(",") if a.strip()]
+
+    if reference_transcript and not reference_transcript.exists():
+        console.print(f"[red]Error:[/red] Reference transcript not found: {reference_transcript}")
+        raise typer.Exit(1)
+    room_attendees_list = [a.strip() for a in (room_attendees or "").split(",") if a.strip()]
+
+    # For audio-only recording, skip the OCR and face stages (no video frames).
+    skip_ocr = not result.has_video
+    skip_faces = not result.has_video
+
+    _interrupt_event.clear()
+    old_proc_handler = _signal.signal(_signal.SIGINT, _sigint_handler)
+    try:
+        from vocolith.pipeline import run_pipeline
+        ctx = run_pipeline(
+            video_path=result.output_path,
+            output_dir=output_dir,
+            config=cfg,
+            debug_dir=resolved_debug_dir,
+            attendees=attendees_list,
+            dry_run=dry_run,
+            template=template,
+            no_faces=skip_faces,
+            no_ocr=skip_ocr,
+            interrupt_check=lambda: _check_interrupt(console),
+            reference_transcript=reference_transcript,
+            room_attendees=room_attendees_list,
+            room_label=room_label,
+        )
+    finally:
+        _signal.signal(_signal.SIGINT, old_proc_handler)
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    console.print("\n[bold]Results[/bold]")
+    if ctx.transcript:
+        console.print(f"  Segments : {len(ctx.transcript.segments)}")
+        console.print(f"  Speakers : {ctx.transcript.speakers_detected}")
+        console.print(f"  Language : {ctx.transcript.language}")
+
+    transcript_path = output_dir / "transcript.md"
+    if transcript_path.exists():
+        console.print(f"\n  [green]Transcript[/green] -> {transcript_path}")
+
+    for nf in sorted(f for f in output_dir.glob("*.md") if f.name != "transcript.md"):
+        console.print(f"  [green]Notes     [/green] -> {nf}")
+
+    if ctx.errors:
+        console.print(f"\n[yellow]Warnings ({len(ctx.errors)}):[/yellow]")
+        for err in ctx.errors:
+            prefix = "[red]ERROR[/red]" if err.fatal else "[yellow]WARN[/yellow]"
+            console.print(f"  {prefix} [{err.stage}] {err.message}")
+
+    if any(e.fatal for e in ctx.errors):
+        raise typer.Exit(1)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

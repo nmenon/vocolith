@@ -175,12 +175,38 @@ def _run_confirmation_wizard_inner(
     # ── Other strategies: individual interactive panels ───────────────────────
     for p in [p for p in pending if not p.auto_confirmed]:
         label_segs = segments_by_label.get(p.label, [])
-        confirmed_name = _confirm_one(
-            pending=p,
-            segments=label_segs,
-            audio_path=ctx.effective_audio,
-            video_path=ctx.video_path,
-        )
+
+        if p.needs_room_split:
+            # Detected as the shared conference-room mic — go straight to the
+            # segment-by-segment split, pre-filled with best-effort guesses,
+            # instead of offering a single (necessarily wrong) name.
+            console.print(
+                f"[bold yellow]{p.label}[/bold yellow] looks like the shared "
+                f"conference-room mic — assign each turn to one of: "
+                f"[cyan]{', '.join(p.room_candidates)}[/cyan]\n"
+            )
+            confirmed_name = _confirm_segment_by_segment(
+                p, label_segs, ctx.effective_audio, ctx.video_path,
+                default_hints=p.segment_hints,
+            )
+            if confirmed_name is None:
+                console.print(
+                    "[dim]Split skipped — falling back to single-name "
+                    "confirmation for this label.[/dim]\n"
+                )
+                confirmed_name = _confirm_one(
+                    pending=p,
+                    segments=label_segs,
+                    audio_path=ctx.effective_audio,
+                    video_path=ctx.video_path,
+                )
+        else:
+            confirmed_name = _confirm_one(
+                pending=p,
+                segments=label_segs,
+                audio_path=ctx.effective_audio,
+                video_path=ctx.video_path,
+            )
 
         if confirmed_name is None:
             # User skipped — do NOT store embedding (identity unverified)
@@ -572,9 +598,16 @@ def _confirm_segment_by_segment(
     segments: list[dict],
     audio_path,
     video_path,
+    default_hints: "dict[int, str] | None" = None,
 ) -> "dict[int, str] | None":
     """
     Walk through every segment for this speaker label one at a time.
+
+    default_hints: optional {segment_id: name} best-effort guesses (e.g. from
+    reference-transcript cross-referencing) used to pre-fill each segment's
+    default instead of always defaulting to pending.display_name. When hints
+    name 2+ different people, the "assign all to one name" bulk fast-path is
+    skipped entirely since bulk-assigning would defeat the point of the hints.
 
     Returns a dict of {segment_id: speaker_name}, or None if the user
     pressed [q] to abandon and go back to the speaker panel.
@@ -585,41 +618,50 @@ def _confirm_segment_by_segment(
         good_segments = segments
 
     n_segs = len(good_segments)
+    distinct_hints = set((default_hints or {}).values())
+    skip_bulk_fastpath = len(distinct_hints) >= 2
+
     console.print(
         f"\n[bold]Segment-by-segment mode[/bold] — "
         f"{n_segs} segment(s) for [yellow]{pending.label}[/yellow]\n"
-        f"[dim]Press Enter to keep '[bold]{pending.display_name}[/bold]' for each segment. "
+        f"[dim]Press Enter to keep the shown default for each segment. "
         f"Type a name to reassign.  During the loop, type [yellow]r NAME[/yellow] to "
         f"assign the current and all remaining segments in one go.[/dim]\n"
     )
 
-    # ── Fast-path: bulk assign all segments before entering the loop ─────────
-    fast = Prompt.ask(
-        f"  [dim]Assign all {n_segs} segment(s) to "
-        f"'[bold]{pending.display_name}[/bold]'? "
-        f"([green]Enter[/green]=yes  [cyan]name[/cyan]=assign all to that name  "
-        f"[yellow]n[/yellow]=review one-by-one)[/dim]",
-        default="",
-    ).strip()
-
-    if fast.lower() != "n":
-        bulk_name = pending.display_name if fast == "" else fast.strip()
-        if not bulk_name:
-            bulk_name = pending.display_name
-        assignment = {
-            seg.get("segment_id", i): bulk_name
-            for i, seg in enumerate(good_segments)
-        }
+    if skip_bulk_fastpath:
         console.print(
-            f"  [green]✓[/green] All {n_segs} segment(s) assigned to "
-            f"'[bold]{bulk_name}[/bold]'."
+            f"[dim]{len(distinct_hints)} different speakers suggested from the "
+            f"reference transcript — reviewing segment-by-segment.[/dim]\n"
         )
-        # Jump straight to the apply confirmation
-        if Prompt.ask("\n[dim]Apply this split? [y/N][/dim]", default="N").strip().lower() == "y":
-            return assignment
-        # Cancelled — return None so caller re-shows the speaker panel
-        console.print("[dim]Split cancelled.[/dim]")
-        return None
+    else:
+        # ── Fast-path: bulk assign all segments before entering the loop ─────
+        fast = Prompt.ask(
+            f"  [dim]Assign all {n_segs} segment(s) to "
+            f"'[bold]{pending.display_name}[/bold]'? "
+            f"([green]Enter[/green]=yes  [cyan]name[/cyan]=assign all to that name  "
+            f"[yellow]n[/yellow]=review one-by-one)[/dim]",
+            default="",
+        ).strip()
+
+        if fast.lower() != "n":
+            bulk_name = pending.display_name if fast == "" else fast.strip()
+            if not bulk_name:
+                bulk_name = pending.display_name
+            assignment = {
+                seg.get("segment_id", i): bulk_name
+                for i, seg in enumerate(good_segments)
+            }
+            console.print(
+                f"  [green]✓[/green] All {n_segs} segment(s) assigned to "
+                f"'[bold]{bulk_name}[/bold]'."
+            )
+            # Jump straight to the apply confirmation
+            if Prompt.ask("\n[dim]Apply this split? [y/N][/dim]", default="N").strip().lower() == "y":
+                return assignment
+            # Cancelled — return None so caller re-shows the speaker panel
+            console.print("[dim]Split cancelled.[/dim]")
+            return None
 
     assignment: dict[int, str] = {}   # segment_id → name
     current_default = pending.display_name
@@ -636,9 +678,16 @@ def _confirm_segment_by_segment(
         ts_end = _fmt_ts(seg.get("end", 0))
         text   = (seg.get("text") or "").strip()
 
+        # Per-segment default: a hint (if any) takes priority over the
+        # sticky current_default, but never overrides it once the user has
+        # explicitly set a bulk default via "r NAME" or a confirmed rename.
+        hint = (default_hints or {}).get(seg_id)
+        seg_default = hint if hint and hint != current_default else current_default
+        hint_note = "  [dim](suggested from reference transcript)[/dim]" if hint else ""
+
         body_lines = [f"[dim][{ts} → {ts_end}][/dim]  {text}", ""]
         legend = "[bold]Keys:[/bold]  [green]Enter[/green]=Keep '{default}'  [cyan]name[/cyan]=Assign  [yellow]r NAME[/yellow]=Assign remaining".format(
-            default=current_default)
+            default=seg_default)
         if audio_path:
             legend += "  [yellow]p[/yellow]=Play audio"
         if video_path:
@@ -651,7 +700,7 @@ def _confirm_segment_by_segment(
                 "\n".join(body_lines),
                 title=(
                     f"[bold cyan]Segment {i+1}/{len(good_segments)}[/bold cyan]"
-                    f"  default: [bold]{current_default}[/bold]"
+                    f"  default: [bold]{seg_default}[/bold]{hint_note}"
                 ),
                 border_style="cyan",
                 padding=(0, 1),
@@ -666,17 +715,17 @@ def _confirm_segment_by_segment(
             elif ans.lower() == "p" and audio_path:
                 console.print(f"[dim]▶ Playing [{ts} → {ts_end}]...[/dim]")
                 _play_audio(audio_path, seg.get("start", 0), seg.get("end", 0))
-                console.print(f"[dim]Finished. Press Enter to keep '{current_default}', or type a name:[/dim]")
+                console.print(f"[dim]Finished. Press Enter to keep '{seg_default}', or type a name:[/dim]")
             elif ans.lower() == "f" and video_path:
                 mid = (seg.get("start", 0) + seg.get("end", 0)) / 2
                 console.print(f"[dim]📷 Extracting frame at {_fmt_ts(mid)}...[/dim]")
                 _show_frame(video_path, mid)
-                console.print(f"[dim]Frame opened. Press Enter to keep '{current_default}', or type a name:[/dim]")
+                console.print(f"[dim]Frame opened. Press Enter to keep '{seg_default}', or type a name:[/dim]")
             elif ans.lower() == "s":
-                assignment[seg_id] = current_default
+                assignment[seg_id] = seg_default
                 break
             elif ans == "":
-                assignment[seg_id] = current_default
+                assignment[seg_id] = seg_default
                 break
             elif ans.lower().startswith("r ") and ans[2:].strip():
                 # "r NAME" — assign this segment AND all remaining to NAME
@@ -693,7 +742,7 @@ def _confirm_segment_by_segment(
                 break
             else:
                 assignment[seg_id] = ans
-                if ans != current_default:
+                if ans != seg_default:
                     from rich.prompt import Confirm
                     if Confirm.ask(
                         f"  Make [cyan]'{ans}'[/cyan] the default for remaining segments?",

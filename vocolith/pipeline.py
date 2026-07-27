@@ -48,6 +48,13 @@ class PipelineContext:
     # Known attendees supplied by the user (--attendees flag)
     attendees: list[str] = field(default_factory=list)
 
+    # Reference transcript cross-referencing (e.g. Teams .vtt export) —
+    # used to confidently name labels that map cleanly to one remote
+    # participant, and to detect the shared conference-room mic label.
+    reference_entries: list[Any] = field(default_factory=list)   # list[ReferenceEntry]
+    room_attendees: list[str] = field(default_factory=list)
+    room_label: str | None = None
+
     # Speaker resolution
     speaker_map: dict[str, str] = field(default_factory=dict)   # label -> display_name
     # Populated by speaker_resolver; consumed by confirmation wizard
@@ -102,6 +109,9 @@ def run_pipeline(
     no_faces: bool = False,
     no_ocr: bool = False,
     interrupt_check: Optional[Callable[[], bool]] = None,
+    reference_transcript: Path | None = None,
+    room_attendees: list[str] | None = None,
+    room_label: str | None = None,
 ) -> PipelineContext:
     """
     Execute the full meeting decoder pipeline.
@@ -117,6 +127,12 @@ def run_pipeline(
         template:    Notes template name or path override.
         no_faces:    Skip face recognition.
         no_ocr:      Skip OCR name extraction.
+        reference_transcript: Path to a Teams-generated .vtt transcript used
+                     to cross-reference speaker identification.
+        room_attendees: Subset of attendees sharing one conference-room mic —
+                     their diarization label is routed into the split wizard.
+        room_label:  Exact reference-transcript speaker name for the shared
+                     room device, if known.
 
     Returns:
         PipelineContext with all populated fields and any non-fatal errors.
@@ -135,6 +151,8 @@ def run_pipeline(
         debug_dir=resolved_debug,
         config=config,
         attendees=attendees or [],
+        room_attendees=room_attendees or [],
+        room_label=room_label,
     )
     resolved_output.mkdir(parents=True, exist_ok=True)
     resolved_debug.mkdir(parents=True, exist_ok=True)
@@ -162,6 +180,7 @@ def run_pipeline(
             dry_run=dry_run, template=template,
             no_faces=no_faces, no_ocr=no_ocr,
             interrupt_check=interrupt_check,
+            reference_transcript=reference_transcript,
         )
 
 
@@ -175,6 +194,7 @@ def _run_pipeline_inner(
     no_faces: bool,
     no_ocr: bool,
     interrupt_check: Optional[Callable[[], bool]] = None,
+    reference_transcript: Path | None = None,
 ) -> "PipelineContext":
     """Execute pipeline stages within the active progress context."""
 
@@ -281,6 +301,14 @@ def _run_pipeline_inner(
         ctx.transcript.segments = correct_transcript_terminology(
             ctx.transcript.segments, ctx.ocr_vocabulary
         )
+
+    # ── Parse reference transcript (e.g. Teams .vtt) before resolution ──────
+    if reference_transcript:
+        try:
+            from vocolith.utils.vtt_reader import parse_teams_vtt
+            ctx.reference_entries = parse_teams_vtt(reference_transcript)
+        except Exception as exc:
+            ctx.add_error("vtt_reader", f"Reference transcript parse failed: {exc}")
 
     # ── Stage 7: Speaker resolution ──────────────────────────────────────────
     stage_fn(7, "Speaker Resolution")

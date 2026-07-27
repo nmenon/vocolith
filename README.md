@@ -129,6 +129,9 @@ vocolith process [OPTIONS] VIDEO
 | `--local-model TEXT` | | Ollama model name (default: from config, e.g. `mistral:7b`) |
 | `--local-url TEXT` | | Ollama base URL (default: `http://localhost:11434/v1`) |
 | `--attendees TEXT` | `-a` | Comma-separated expected attendees: `"Alice Smith, Bob Jones"` |
+| `--reference-transcript PATH` | | Teams-generated `.vtt` transcript to cross-reference for speaker accuracy |
+| `--room-attendees TEXT` | | Subset of `--attendees` sharing one conference-room mic — auto-routes their label into the split wizard |
+| `--room-label TEXT` | | Exact speaker name in `--reference-transcript` for the shared room device, if known |
 | `--template TEXT` | `-t` | Add an extra template to this run |
 | `--meeting-type TEXT` | `-m` | Meeting type alias (overrides `templates.run`) |
 | `--confirm` / `--no-confirm` | | Show speaker ID review wizard before writing transcript (default: on) |
@@ -169,6 +172,14 @@ vocolith process meeting.mp4 --language en --model-size small --output-dir ~/tod
 # Local LLM via Ollama
 vocolith process meeting.mp4 --local
 vocolith process meeting.mp4 --local --local-model llama3:8b
+
+# Hybrid meeting: some attendees remote, some sharing one conference-room mic.
+# Cross-reference the Teams transcript to name remote attendees confidently,
+# and auto-route the room's diarization label into the segment-split wizard.
+vocolith process meeting.mp4 \
+  --attendees "Alice Smith, Bob Jones, Carol Wu, Dave Lee" \
+  --reference-transcript teams_transcript.vtt \
+  --room-attendees "Bob Jones, Carol Wu"
 ```
 
 ---
@@ -345,6 +356,10 @@ For each SPEAKER_N label:
        Rename with: vocolith profiles rename "Speaker_N" "Alice Smith"
 ```
 
+When `--reference-transcript` is given, a reference-transcript strategy runs
+between voice STANDARD and addressee inference, using time-overlap against
+the reference transcript's own speaker attribution (see "Hybrid meetings" below).
+
 ### Name candidate sources
 
 Addressee inference needs candidate names to search for. Sources (merged automatically):
@@ -354,8 +369,29 @@ Addressee inference needs candidate names to search for. Sources (merged automat
 3. **Transcript mining** — automatic extraction using:
    - Addressee patterns: `"Alice, can you..."`, `"Thanks Bob"`, `"ask Carol"`
    - Repeated proper nouns: capitalised words appearing 3+ times across speaker turns
+4. **`--reference-transcript`** — a Teams `.vtt` transcript's own per-device speaker attribution
 
 This means addressee inference works even on a fresh meeting with cameras off and no `--attendees` — as long as participants address each other by name in conversation.
+
+### Hybrid meetings: conference room + remote attendees
+
+Some attendees share one physical conference-room mic; others join remotely
+on their own device. Vocolith's diarization usually separates clean remote
+mics well but blends room participants into one label. If you also have the
+meeting's Teams-generated `.vtt` transcript (per-device speaker attribution,
+reliable for remote folks), pass it with `--reference-transcript`:
+
+- Any diarization label whose speech lines up cleanly with one Teams speaker
+  is named directly from that match (method shown in the wizard as
+  `reference_transcript(0.NN)`, where `0.NN` is the overlap coverage).
+- Pass `--room-attendees "Bob Jones, Carol Wu"` to name which attendees share
+  the room mic. The label that maps to the room (either explicitly via
+  `--room-label`, or because no single Teams speaker dominates its overlap)
+  is routed straight into the segment-by-segment split wizard, pre-filled
+  with best-effort per-segment guesses from the reference transcript and
+  addressee inference — restricted to just the room attendees you named.
+- Without `--room-attendees`, the reference transcript is used purely to
+  improve naming confidence; no forced split happens.
 
 ### The confirmation wizard
 

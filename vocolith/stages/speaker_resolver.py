@@ -18,7 +18,7 @@ Strategies 2-6 are "auto-identified" and can require user confirmation
 from __future__ import annotations
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +38,14 @@ class PendingSpeaker:
     method: str           # how it was resolved e.g. "ocr", "voice(mid,0.87)"
     speaker_id: str       # profile UUID in SQLite
     auto_confirmed: bool  # True = voice HIGH, no confirmation needed
+    # Set when this label was detected as the shared conference-room mic —
+    # routes straight into the segment-by-segment split wizard instead of
+    # the normal single-name confirmation panel.
+    needs_room_split: bool = False
+    room_candidates: list[str] = field(default_factory=list)
+    # Best-effort per-segment name guesses (segment_id -> name) used to
+    # pre-fill the split wizard.  Segments with no guess are simply absent.
+    segment_hints: dict[int, str] = field(default_factory=dict)
 
 
 def _extract_first_name(full_name: str) -> str:
@@ -344,6 +352,54 @@ def resolve_speakers(ctx: "PipelineContext") -> "PipelineContext":
             pass
 
         else:
+            # ── Reference transcript (e.g. Teams .vtt) cross-reference ───────
+            # Computed once here so both the room-mixed check and Strategy 2b
+            # below can use it.
+            ref_match: str | None = None
+            ref_coverage: float = 0.0
+            if ctx.reference_entries:
+                ref_match, ref_coverage = _match_reference_transcript(label, ctx)
+
+            # ── Room-mixed detection: shared conference-room mic ──────────────
+            # A label is "room-mixed" (multiple people on one physical mic)
+            # when either the user told us which reference-transcript name is
+            # the room device (--room-label), or no single reference speaker
+            # dominates this label's overlap (--room-attendees given, no
+            # --room-label).  Routes straight to the split wizard instead of
+            # picking a single (wrong) name.
+            is_room_mixed = False
+            if ctx.room_attendees:
+                if ctx.room_label and ref_match and ref_match.lower() == ctx.room_label.lower():
+                    is_room_mixed = True
+                elif not ctx.room_label and ctx.reference_entries and ref_coverage < sr.reference_match_threshold:
+                    is_room_mixed = True
+
+            if is_room_mixed:
+                display_name = f"Speaker_{i + 1} (room)"
+                profile = SpeakerProfile(display_name=display_name)
+                speaker_store.save(profile)
+                speaker_id = profile.speaker_id
+                ctx.pending_new_profiles.add(label)
+                method = "room(needs_split)"
+                hints = _room_split_hints(label, ctx, ctx.room_attendees)
+                log.info("  %s -> room-mixed, needs split among %s (%d segment hint(s))",
+                         label, ctx.room_attendees, len(hints))
+
+                label_to_name[label] = display_name
+                label_to_method[label] = method
+                label_to_id[label] = speaker_id
+                pending_speakers.append(PendingSpeaker(
+                    label=label,
+                    display_name=display_name,
+                    method=method,
+                    speaker_id=speaker_id,
+                    auto_confirmed=False,
+                    needs_room_split=True,
+                    room_candidates=list(ctx.room_attendees),
+                    segment_hints=hints,
+                ))
+                continue  # skip strategies 2-6 and the common tail below
+
             # ── Strategy 2: Voice d-vector — MEDIUM confidence ───────────────
             # Voice is tried before OCR/addressee: a biometric match is always
             # more reliable than screen text.  OCR and addressee inference only
@@ -356,6 +412,33 @@ def resolve_speakers(ctx: "PipelineContext") -> "PipelineContext":
                     method = f"voice(mid,{voice_mid_sim:.2f})"
                     log.info("  %s -> '%s' via voice MED (sim=%.3f)",
                              label, display_name, voice_mid_sim)
+
+            # ── Strategy 2b: Reference transcript — clean single-speaker match ──
+            # A Teams-style reference transcript's per-device attribution is a
+            # stronger signal than the OCR/addressee text heuristics below —
+            # trusted here, ahead of them, but below both voice tiers so
+            # cross-meeting biometric identity continuity still wins.
+            if not speaker_id and ref_match and ref_coverage >= sr.reference_match_threshold:
+                canonical = _resolve_to_attendee(ref_match, ctx.attendees) or ref_match
+                existing = (speaker_store.find_by_name(canonical)
+                            or speaker_store.find_by_alias(canonical)
+                            or (speaker_store.find_by_alias(ref_match)
+                                if canonical != ref_match else None))
+                if existing:
+                    speaker_id = existing.speaker_id
+                    display_name = existing.display_name
+                else:
+                    profile = SpeakerProfile(display_name=canonical)
+                    speaker_store.save(profile)
+                    speaker_store.add_alias(profile.speaker_id, canonical, "reference_transcript")
+                    if canonical != ref_match:
+                        speaker_store.add_alias(profile.speaker_id, ref_match, "reference_transcript")
+                    speaker_id = profile.speaker_id
+                    display_name = canonical
+                    ctx.pending_new_profiles.add(label)
+                method = f"reference_transcript({ref_coverage:.2f})"
+                log.info("  %s -> '%s' via reference transcript (coverage=%.2f)",
+                         label, display_name, ref_coverage)
 
             # ── Strategy 3: Addressee inference ──────────────────────────────
             # Speech-based: "Hey Alice, can you..." — more reliable than OCR.
@@ -670,6 +753,111 @@ def _try_ocr_match(
         return best_name
 
     return None
+
+
+def _match_reference_transcript(
+    label: str,
+    ctx: "PipelineContext",
+) -> tuple[str | None, float]:
+    """
+    Time-overlap vote of ctx.reference_entries against this label's segment
+    windows — same overlap-voting shape as _try_ocr_match, but using real
+    durations from a reference transcript (e.g. Teams .vtt) rather than
+    frame counts.
+
+    Returns (best_speaker_name, coverage) where coverage is the share of all
+    reference speech overlapping this label's turns that is attributed to
+    best_speaker_name.  A high coverage means one reference speaker's speech
+    lines up almost exclusively with this label's turns — a clean 1:1 match.
+    A low coverage means this label's turns overlap diffusely with several
+    different reference speakers.  Returns (None, 0.0) when there is nothing
+    to compare.
+    """
+    if not ctx.reference_entries or not ctx.transcript:
+        return None, 0.0
+
+    windows = [
+        (seg.start, seg.end)
+        for seg in ctx.transcript.segments
+        if seg.speaker_label == label
+    ]
+    if not windows:
+        return None, 0.0
+
+    votes: Counter = Counter()
+    total = 0.0
+    for entry in ctx.reference_entries:
+        for start, end in windows:
+            overlap = min(entry.end, end) - max(entry.start, start)
+            if overlap > 0:
+                votes[entry.speaker] += overlap
+                total += overlap
+                break  # count each reference entry once per label
+    if not votes or total <= 0:
+        return None, 0.0
+
+    best_speaker, best_overlap = votes.most_common(1)[0]
+    return best_speaker, best_overlap / total
+
+
+def _room_split_hints(
+    label: str,
+    ctx: "PipelineContext",
+    room_candidates: list[str],
+) -> dict[int, str]:
+    """
+    Best-effort per-segment name guesses for a room-mixed diarization label,
+    restricted to `room_candidates`.  Used to pre-fill the segment-by-segment
+    split wizard so most turns just need an Enter to confirm.
+
+    Two signal sources, tried per segment:
+      1. A single reference-transcript entry overlapping this segment whose
+         speaker resolves to a room candidate.
+      2. Addressee inference on the immediately preceding transcript segment
+         ("Hey Bob, ...") restricted to room candidate names.
+
+    Segments with no hint are simply absent from the returned dict.
+    """
+    if not ctx.transcript or not room_candidates:
+        return {}
+
+    label_segments = [s for s in ctx.transcript.segments if s.speaker_label == label]
+    if not label_segments:
+        return {}
+
+    hints: dict[int, str] = {}
+
+    # Signal 1: reference-transcript overlap, restricted to a single
+    # unambiguous overlapping entry per segment.
+    if ctx.reference_entries:
+        for seg in label_segments:
+            overlapping = [
+                e for e in ctx.reference_entries
+                if min(e.end, seg.end) - max(e.start, seg.start) > 0
+            ]
+            if len(overlapping) == 1:
+                match = _resolve_to_attendee(overlapping[0].speaker, room_candidates)
+                if match:
+                    hints[seg.segment_id] = match
+
+    # Signal 2: addressee inference on the preceding segment's text,
+    # restricted to room candidate names only.
+    import re as _re
+    all_segments = ctx.transcript.segments
+    for i, seg in enumerate(all_segments):
+        if seg.speaker_label != label or seg.segment_id in hints or i == 0:
+            continue
+        prev_text = all_segments[i - 1].text.lower().strip()
+        for candidate in room_candidates:
+            name_lower = _extract_first_name(candidate).lower() or candidate.lower()
+            if len(name_lower) < 2:
+                continue
+            pattern = r'\b' + _re.escape(name_lower) + r'\b'
+            if _re.search(pattern, prev_text):
+                hints[seg.segment_id] = candidate
+                break
+
+    return hints
 
 
 def _try_face_match(

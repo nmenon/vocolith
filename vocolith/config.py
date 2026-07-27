@@ -89,6 +89,11 @@ class SpeakerResolutionConfig(BaseModel):
     ocr_match_confidence: float = 0.70
     face_match_threshold: float = 0.60
     addressee_min_votes: int = 2
+    # Reference transcript cross-referencing (e.g. Teams .vtt export).
+    # Single threshold, used both ways: coverage >= this = confident clean
+    # match (name directly); coverage < this with --room-attendees set and
+    # no explicit --room-label = presume shared room mic (route to split).
+    reference_match_threshold: float = 0.6
     # Require user confirmation before committing speaker names.
     # ALL strategies shown — voice HIGH with a confidence badge, others without.
     # Disable with --no-confirm for fully automated runs (e.g. batch processing).
